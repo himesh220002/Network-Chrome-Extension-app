@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@import "tailwindcss";
+
+#root {
+  width: 600px;
+  height: 550px;
+  max-width: 100%;
+  margin: 0 auto;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+}
