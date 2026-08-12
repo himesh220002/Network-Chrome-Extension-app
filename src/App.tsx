@@ -128,39 +128,50 @@ export default function App() {
     const escapeCSV = (val: any) => `"${String(val || '').replace(/"/g, '""')}"`;
 
     connections.forEach(c => {
-      let score = 0;
+      let bestScore = 0;
+      let bestTargetName = "";
+      
       const baseText = `${c.role || ''} ${c.notes || ''} ${c.fullProfileContext || ''}`;
       
       if (baseText.trim()) {
          const fuseTextSearch = new Fuse([baseText], { includeScore: true, threshold: 0.3 });
+         
+         savedPersonas.forEach(persona => {
+             let currentScore = 0;
 
-         if (activePersona.roles.length > 0) {
-            let roleMatch = false;
-            activePersona.roles.forEach(r => {
-                if (fuseTextSearch.search(r).length > 0) roleMatch = true;
-            });
-            if (roleMatch) score += activePersona.weights.role;
-         }
-         
-         if (activePersona.skills.length > 0) {
-            let skillMatchCount = 0;
-            activePersona.skills.forEach(s => { 
-                if (fuseTextSearch.search(s).length > 0) skillMatchCount++; 
-            });
-            if (skillMatchCount > 0) score += activePersona.weights.skills * Math.min(1, skillMatchCount / Math.max(1, activePersona.skills.length - 1));
-         }
-         
-         const pSkills = profile.skills.split(',').map(s => s.trim()).filter(Boolean);
-         pSkills.forEach(s => { 
-             if (fuseTextSearch.search(s).length > 0) score += 10; 
+             if (persona.roles.length > 0) {
+                let roleMatch = false;
+                persona.roles.forEach(r => {
+                    if (fuseTextSearch.search(r).length > 0) roleMatch = true;
+                });
+                if (roleMatch) currentScore += persona.weights.role;
+             }
+             
+             if (persona.skills.length > 0) {
+                let skillMatchCount = 0;
+                persona.skills.forEach(s => { 
+                    if (fuseTextSearch.search(s).length > 0) skillMatchCount++; 
+                });
+                if (skillMatchCount > 0) currentScore += persona.weights.skills * Math.min(1, skillMatchCount / Math.max(1, persona.skills.length - 1));
+             }
+             
+             const pSkills = profile.skills.split(',').map(s => s.trim()).filter(Boolean);
+             pSkills.forEach(s => { 
+                 if (fuseTextSearch.search(s).length > 0) currentScore += 10; 
+             });
+             
+             if (c.email || c.phone) currentScore += 5;
+             
+             if (currentScore > bestScore) {
+                 bestScore = currentScore;
+                 bestTargetName = persona.name;
+             }
          });
-         
-         if (c.email || c.phone) score += 5;
       }
       
-      const finalScore = Math.min(Math.round(score), 100);
+      const finalScore = Math.min(Math.round(bestScore), 100);
       const isTarget = finalScore >= 40 ? "Yes" : "No";
-      const targetName = isTarget === "Yes" ? activePersona.name : "";
+      const targetName = isTarget === "Yes" ? bestTargetName : "";
 
       let domain = "Website";
       try {
@@ -726,7 +737,7 @@ function ConnectionsList({ connections, onDelete, onUpdate, onAdd, profile, targ
                     {c.careerStage === 'Experienced' && (
                        <div className="flex items-center gap-1">
                          <input 
-                           type="number" 
+                           type="number" step="0.1"
                            value={c.totalYearsExp || ''} 
                            onChange={e => onUpdate(c.id, { totalYearsExp: Number(e.target.value) })}
                            className="w-10 text-[9px] font-bold bg-white border border-slate-200 text-slate-700 px-1 py-0.5 rounded outline-none focus:border-amber-400 text-center shadow-sm" 

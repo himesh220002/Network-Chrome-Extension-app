@@ -2,10 +2,26 @@
 console.log("Smart Connector Content Script loaded.");
 
 function extractData() {
-  const url = window.location.href;
+  let url = window.location.href;
   const isLinkedInProfile = url.includes('linkedin.com/in/');
   const isLinkedInCompany = url.includes('linkedin.com/company/');
   const isBusiness = isLinkedInCompany || url.includes('google.com/maps/') || url.includes('google.com/search');
+  
+  const isNaukri = url.includes('naukri.com/job-listings');
+  const isFoundit = url.includes('foundit.in/job');
+  const isHirist = url.includes('hirist.tech/j/');
+  const isJobPortal = isNaukri || isFoundit || isHirist;
+
+  // Normalize LinkedIn Profile URL to ensure sub-pages merge correctly
+  if (isLinkedInProfile) {
+    const match = url.match(/(https:\/\/(www\.)?linkedin\.com\/in\/[^\/?#]+)/i);
+    if (match) {
+        url = match[1];
+    }
+  } else if (isJobPortal) {
+    // Strip query parameters for job portals to keep them clean
+    url = url.split('?')[0];
+  }
 
   let connectionsToDispatch = [];
 
@@ -21,6 +37,29 @@ function extractData() {
 
     const headlineNode = document.querySelector('.text-body-medium.break-words');
     if (headlineNode) role = headlineNode.innerText.trim();
+
+    // Robust fallback for Role (especially on /details/experience sub-pages)
+    if (!role || url.includes('/details/experience')) {
+        const mainContent = document.querySelector('main') || document.body;
+        const lines = mainContent.innerText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        let startIndex = 0;
+        const expHeaderIndex = lines.findIndex(l => l.toLowerCase() === 'experience');
+        if (expHeaderIndex !== -1) startIndex = expHeaderIndex + 1;
+        
+        while (startIndex < lines.length && (lines[startIndex].toLowerCase().includes('linkedin') || lines[startIndex].length < 3)) {
+            startIndex++;
+        }
+        
+        if (startIndex < lines.length) {
+            const potentialRole = lines[startIndex];
+            if (potentialRole && !potentialRole.match(/\d{4}/)) {
+                role = potentialRole;
+                if (startIndex + 1 < lines.length && !lines[startIndex + 1].match(/\d{4}/)) {
+                     company = lines[startIndex + 1];
+                }
+            }
+        }
+    }
 
     const companyNode = document.querySelector('button[aria-label*="Current company"]');
     if (companyNode) {
@@ -78,23 +117,57 @@ function extractData() {
         if (expSection) fullProfileContext += expSection.innerText + '\n\n';
     } catch(e) {}
     
-    const expMatch = textLower.match(/(\d+)\+?\s*years? of experience/);
+    // Match cumulative statements first (e.g. "Over 2.5 years of experience")
+    const expMatch = textLower.match(/(\d+(?:\.\d+)?)\+?\s*y(?:ea)?r?s?(?: of)? experience/);
     if (expMatch && expMatch[1]) {
       careerStage = 'Experienced';
-      totalYearsExp = parseInt(expMatch[1], 10);
+      totalYearsExp = Math.round(parseFloat(expMatch[1]) * 10) / 10;
     } else {
-      const durationMatches = textLower.match(/(\d+)\s*yrs?(?:\s*\d+\s*mos?)?|(\d+)\s*mos?/g);
+      let totalMonths = 0;
+      
+      // 1. Decade matching
+      if (textLower.match(/\bdecade\b/)) totalMonths += 120;
+      
+      // 2. Decimal matching (e.g. "2.3 years", "1.5 yrs")
+      const decimalMatches = textLower.match(/(\d+\.\d+)\s*y(?:ea)?r?s?/g);
+      if (decimalMatches) {
+         decimalMatches.forEach(m => {
+            const val = parseFloat(m);
+            if (!isNaN(val)) totalMonths += Math.round(val * 12);
+         });
+      }
+      
+      // 3. Standard and abbreviation matching (e.g. "2 years 3 months", "2y 3m", "2y3m")
+      const durationMatches = textLower.match(/(\d+)\s*y(?:ea)?r?s?(?:\s*(\d+)\s*m(?:o|onth)?s?)?|(\d+)\s*m(?:o|onth)?s?/g);
       if (durationMatches && durationMatches.length > 0) {
-         let totalMonths = 0;
          durationMatches.forEach(m => {
-            const yrMatch = m.match(/(\d+)\s*yr/);
-            const moMatch = m.match(/(\d+)\s*mo/);
+            const yrMatch = m.match(/(\d+)\s*y(?:ea)?r?s?/);
+            const moMatch = m.match(/(\d+)\s*m(?:o|onth)?s?/);
             if (yrMatch && yrMatch[1]) totalMonths += parseInt(yrMatch[1], 10) * 12;
             if (moMatch && moMatch[1]) totalMonths += parseInt(moMatch[1], 10);
          });
-         if (totalMonths > 0) {
+         
+         // Chronological fallback to prevent overlapping roles double-counting
+         let chronoMonths = 0;
+         const expSection = Array.from(document.querySelectorAll('section')).find(s => s.innerText.toLowerCase().includes('experience'));
+         const searchArea = expSection ? expSection.innerText : document.body.innerText;
+         const yearMatches = searchArea.match(/\b(199\d|20[0-2]\d)\b/g);
+         
+         if (yearMatches && yearMatches.length > 0) {
+             const years = yearMatches.map(y => parseInt(y, 10));
+             const minYear = Math.min(...years);
+             const currentYear = new Date().getFullYear();
+             if (minYear >= 1970 && minYear <= currentYear) {
+                 chronoMonths = (currentYear - minYear) * 12;
+             }
+         }
+         
+         // Use the smaller of the two to combat massive double-counts, unless chrono is 0
+         const finalMonths = (chronoMonths > 0 && chronoMonths < totalMonths) ? chronoMonths : totalMonths;
+
+         if (finalMonths > 0) {
             careerStage = 'Experienced';
-            totalYearsExp = Math.min(Math.ceil(totalMonths / 12), 40); 
+            totalYearsExp = Math.round((finalMonths / 12) * 10) / 10; // Supports 1 decimal place (e.g. 2y3m -> 27mo/12 -> 2.25 -> 2.3)
          }
       } else if (textLower.includes('student at') || textLower.includes('university ') || role.toLowerCase().includes('student')) {
          careerStage = 'Student';
@@ -103,11 +176,20 @@ function extractData() {
       }
     }
 
+    // Extract emails and phone numbers from the entire page text
+    const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/gi;
+    const emails = [...new Set(document.body.innerText.match(emailRegex) || [])];
+    const email = emails.length > 0 ? emails[0] : '';
+
+    const phoneRegex = /(?:\+?\d{1,3}[\s-]?)?\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4}/g;
+    const phones = [...new Set(document.body.innerText.match(phoneRegex) || [])];
+    const phone = phones.length > 0 ? phones[0].trim() : '';
+
     connectionsToDispatch.push({
       id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-      email: '', // We could extract emails here if wanted
-      phone: '',
-      url: window.location.href,
+      email: email,
+      phone: phone,
+      url: url,
       name: name,
       role: role,
       isBusiness: false,
@@ -116,6 +198,68 @@ function extractData() {
       careerStage: careerStage || undefined,
       totalYearsExp: totalYearsExp > 0 ? totalYearsExp : undefined,
       fullProfileContext: fullProfileContext || undefined,
+      timestamp: Date.now()
+    });
+
+  } else if (isJobPortal) {
+    // SINGLE JOB POSTING EXTRACTION (Naukri, Foundit, Hirist)
+    let name = document.title.split('-')[0].split('|')[0].trim();
+    let company = '';
+    let role = 'Job Posting';
+    let careerStage = '';
+    let totalYearsExp = 0;
+
+    const textLower = document.body.innerText.toLowerCase();
+
+    // Heuristics to find experience for Job portals
+    const expRegex = /(\d+)\s*(?:to|-)\s*(\d+)\s*years?/i;
+    const match = textLower.match(expRegex);
+    if (match) {
+        totalYearsExp = parseInt(match[2], 10); // take the max experience of the range
+        careerStage = 'Experienced';
+    } else {
+        const singleExp = textLower.match(/(\d+)\+?\s*years? of experience/i);
+        if (singleExp) {
+           totalYearsExp = parseInt(singleExp[1], 10);
+           careerStage = 'Experienced';
+        } else if (textLower.includes('fresher') || textLower.includes('intern')) {
+           careerStage = 'Fresher';
+        }
+    }
+
+    // Try to extract company name from title (e.g., "Job Title at Company Name")
+    if (document.title.includes(' at ')) {
+        company = document.title.split(' at ')[1].split('-')[0].split('|')[0].trim();
+    } else if (document.title.includes('-')) {
+        company = document.title.split('-')[1].trim();
+    }
+
+    // Extract emails and phone numbers from the entire page text
+    const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/gi;
+    const emails = [...new Set(document.body.innerText.match(emailRegex) || [])];
+    const email = emails.length > 0 ? emails[0] : '';
+
+    const phoneRegex = /(?:\+?\d{1,3}[\s-]?)?\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4}/g;
+    const phones = [...new Set(document.body.innerText.match(phoneRegex) || [])];
+    const phone = phones.length > 0 ? phones[0].trim() : '';
+
+    let notesArr = [];
+    if (company) notesArr.push(`🏢 ${company}`);
+    notesArr.push(`🔗 Discovered on: ${window.location.hostname.replace('www.', '')}`);
+    const notes = notesArr.join(' | ');
+
+    connectionsToDispatch.push({
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+      email: email,
+      phone: phone,
+      url: url,
+      name: name,
+      role: role,
+      isBusiness: true,
+      status: 'Lead',
+      notes: notes,
+      careerStage: careerStage || undefined,
+      totalYearsExp: totalYearsExp > 0 ? totalYearsExp : undefined,
       timestamp: Date.now()
     });
 
@@ -213,6 +357,8 @@ function extractData() {
 
 // Run extraction 4 seconds after page load to allow dynamic content (React/SPA) to fully render
 setTimeout(extractData, 4000);
+// Run a secondary extraction at 20s to catch data lazy-loaded as the user scrolls
+setTimeout(extractData, 20000);
 
 // Watch for URL changes on Single Page Applications (like LinkedIn) without full page reloads
 let lastUrl = window.location.href;
@@ -222,6 +368,7 @@ new MutationObserver(() => {
     lastUrl = url;
     window._scLastPayload = null; // reset payload cache on navigation
     setTimeout(extractData, 4000);
+    setTimeout(extractData, 20000);
   }
 }).observe(document, { subtree: true, childList: true });
 
