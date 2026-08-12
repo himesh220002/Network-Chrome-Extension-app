@@ -125,6 +125,8 @@ export default function App() {
       ["Name", "Target Detected", "Target Name", "Role", "Platform", "Exp Level", "Exp Years", "Status", "Match Score", "Email", "Phone", "Notes & Links"]
     ];
 
+    const escapeCSV = (val: any) => `"${String(val || '').replace(/"/g, '""')}"`;
+
     connections.forEach(c => {
       let score = 0;
       const baseText = `${c.role || ''} ${c.notes || ''} ${c.fullProfileContext || ''}`;
@@ -168,32 +170,35 @@ export default function App() {
         else domain = hostname;
       } catch {}
 
-      const notesAndLinks = `[Primary] ${c.url} | ${c.notes || ''}`.replace(/"/g, '""');
+      const notesAndLinks = `[Primary] ${c.url} | ${c.notes || ''}`;
 
       rows.push([
-        `"${c.name || 'Unknown'}"`,
-        `"${isTarget}"`,
-        `"${targetName}"`,
-        `"${c.role || ''}"`,
-        `"${domain}"`,
-        `"${c.careerStage || ''}"`,
-        `"${c.totalYearsExp || ''}"`,
-        `"${c.status || 'Lead'}"`,
-        `"${finalScore}%"`,
-        `"${c.email || ''}"`,
-        `"${c.phone || ''}"`,
-        `"${notesAndLinks}"`
+        escapeCSV(c.name || 'Unknown'),
+        escapeCSV(isTarget),
+        escapeCSV(targetName),
+        escapeCSV(c.role),
+        escapeCSV(domain),
+        escapeCSV(c.careerStage),
+        escapeCSV(c.totalYearsExp),
+        escapeCSV(c.status || 'Lead'),
+        escapeCSV(`${finalScore}%`),
+        escapeCSV(c.email),
+        escapeCSV(c.phone),
+        escapeCSV(notesAndLinks)
       ]);
     });
 
-    const csvContent = "data:text/csv;charset=utf-8," + rows.map(e => e.join(",")).join("\n");
-    const encodedUri = encodeURI(csvContent);
+    const csvContent = rows.map(e => e.join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    
     const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
+    link.setAttribute("href", url);
     link.setAttribute("download", `smart-connector-leads-${new Date().toISOString().slice(0,10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const triggerRefresh = () => {
