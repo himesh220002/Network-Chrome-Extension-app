@@ -88,9 +88,25 @@ export default function App() {
           setActivePersonaId(result.activePersonaId as string);
         }
       });
+      
+      const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
+        if (areaName === 'local') {
+          if (changes.connections) setConnections(changes.connections.newValue as Connection[] || []);
+          if (changes.profile) setProfile(changes.profile.newValue as UserProfile);
+          if (changes.savedPersonas) setSavedPersonas(changes.savedPersonas.newValue as TargetPersona[] || [DEFAULT_TARGET_PERSONA]);
+          if (changes.activePersonaId) setActivePersonaId(changes.activePersonaId.newValue as string);
+        }
+      };
+      
+      chrome.storage.onChanged.addListener(handleStorageChange);
+
       if (chrome.runtime && chrome.runtime.sendMessage) {
         chrome.runtime.sendMessage({ type: 'POPUP_OPENED' }).catch(() => {});
       }
+      
+      return () => {
+         chrome.storage.onChanged.removeListener(handleStorageChange);
+      };
     } else {
       setConnections([
         { id: '1', name: 'John Doe', email: 'john@example.com', role: 'Technical Recruiter at Acme Corp', url: 'https://linkedin.com/in/johndoe', timestamp: Date.now(), status: 'VIP', notes: '💡 Tech Hiring • Startups' },
@@ -730,7 +746,9 @@ function ConnectionsList({ connections, onDelete, onUpdate, onAdd, profile, targ
                          <option value="">Exp = ?</option>
                          <option value="Student">Student</option>
                          <option value="Fresher">Fresher</option>
-                         <option value="Experienced">Experienced</option>
+                         <option value="Experienced">
+                           {c.totalYearsExp ? `EXP: ${c.totalYearsExp} YRS` : 'Experienced'}
+                         </option>
                       </select>
                       <ChevronDown size={8} className="absolute right-1 top-1/2 -translate-y-1/2 pointer-events-none opacity-50" />
                     </div>

@@ -1,6 +1,67 @@
 // Smart Connector Content Script
 console.log("Smart Connector Content Script loaded.");
 
+function calculateMergedExperienceMonths(searchAreaText) {
+    const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+    // Matches "Jan 2010 - Present", "Feb 2012 – Mar 2015", "Jan 2020 to Dec 2021", etc.
+    const dateRegex = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{4})\s*(?:-|to|–)\s*(present|current|now|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{4}))\b/gi;
+    
+    let match;
+    let intervals = [];
+    const currentYear = new Date().getFullYear();
+    const currentMonth = new Date().getMonth();
+
+    while ((match = dateRegex.exec(searchAreaText)) !== null) {
+        const startMonthStr = match[1].toLowerCase();
+        const startYear = parseInt(match[2], 10);
+        const startMonth = monthMap[startMonthStr];
+        const startAbsolute = startYear * 12 + startMonth;
+
+        let endAbsolute;
+        if (match[3].toLowerCase() === 'present' || match[3].toLowerCase() === 'current' || match[3].toLowerCase() === 'now') {
+            endAbsolute = currentYear * 12 + currentMonth;
+        } else {
+            const endMonthStr = match[4].toLowerCase();
+            const endYear = parseInt(match[5], 10);
+            const endMonth = monthMap[endMonthStr];
+            endAbsolute = endYear * 12 + endMonth;
+        }
+
+        // Sanity check for valid ranges
+        if (startAbsolute <= endAbsolute && startAbsolute > 1970 * 12 && endAbsolute <= (currentYear + 1) * 12) {
+            intervals.push([startAbsolute, endAbsolute]);
+        }
+    }
+
+    if (intervals.length === 0) return 0;
+
+    // Sort intervals by start time
+    intervals.sort((a, b) => a[0] - b[0]);
+
+    // Merge overlapping intervals
+    let merged = [intervals[0]];
+    for (let i = 1; i < intervals.length; i++) {
+        let current = intervals[i];
+        let lastMerged = merged[merged.length - 1];
+
+        if (current[0] <= lastMerged[1]) {
+            // Overlap: update end time if current extends beyond
+            lastMerged[1] = Math.max(lastMerged[1], current[1]);
+        } else {
+            // No overlap: push distinct interval
+            merged.push(current);
+        }
+    }
+
+    // Sum lengths of merged, non-overlapping blocks
+    let totalMonths = 0;
+    merged.forEach(interval => {
+        totalMonths += (interval[1] - interval[0] + 1); // Inclusive months (e.g., Jan to Jan = 1 month)
+    });
+
+    return totalMonths;
+}
+
 function extractData() {
   let url = window.location.href;
   const isLinkedInProfile = url.includes('linkedin.com/in/');
@@ -8,7 +69,7 @@ function extractData() {
   const isBusiness = isLinkedInCompany || url.includes('google.com/maps/') || url.includes('google.com/search');
   
   const isNaukri = url.includes('naukri.com/job-listings');
-  const isFoundit = url.includes('foundit.in/job');
+  const isFoundit = url.includes('foundit.in') || url.includes('foundit.tech');
   const isHirist = url.includes('hirist.tech/j/');
   const isJobPortal = isNaukri || isFoundit || isHirist;
 
@@ -35,13 +96,21 @@ function extractData() {
     const h1 = document.querySelector('h1');
     if (h1) name = h1.innerText.trim();
 
-    const headlineNode = document.querySelector('.text-body-medium.break-words');
-    if (headlineNode) role = headlineNode.innerText.trim();
+    const headlineNode = document.querySelector('.text-body-medium.break-words, h2.mt1, .ph5.pb5 h2');
+    if (headlineNode) {
+        role = (headlineNode.innerText || '').trim();
+    } else {
+        // Ultimate fallback: LinkedIn always puts the headline in the page title (Name - Headline - Company | LinkedIn)
+        const titleParts = document.title.split('-');
+        if (titleParts.length > 1) {
+            role = titleParts[1].split('|')[0].trim();
+        }
+    }
 
-    // Robust fallback for Role (especially on /details/experience sub-pages)
+    // Robust fallback for Company and Role (especially on /details/experience sub-pages)
     if (!role || url.includes('/details/experience')) {
         const mainContent = document.querySelector('main') || document.body;
-        const lines = mainContent.innerText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        const lines = (mainContent.innerText || '').split('\n').map(l => l.trim()).filter(l => l.length > 0);
         let startIndex = 0;
         const expHeaderIndex = lines.findIndex(l => l.toLowerCase() === 'experience');
         if (expHeaderIndex !== -1) startIndex = expHeaderIndex + 1;
@@ -53,7 +122,7 @@ function extractData() {
         if (startIndex < lines.length) {
             const potentialRole = lines[startIndex];
             if (potentialRole && !potentialRole.match(/\d{4}/)) {
-                role = potentialRole;
+                role = role || potentialRole;
                 if (startIndex + 1 < lines.length && !lines[startIndex + 1].match(/\d{4}/)) {
                      company = lines[startIndex + 1];
                 }
@@ -74,28 +143,31 @@ function extractData() {
       }
     }
 
-    const allSpans = Array.from(document.querySelectorAll('span'));
-    const topSkillsSpan = allSpans.find(s => s.innerText.trim() === 'Top skills');
+    const allSpans = Array.from(document.querySelectorAll('span, h2, h3'));
+    const topSkillsSpan = allSpans.find(s => (s.innerText || '').trim().toLowerCase() === 'top skills');
     
     if (topSkillsSpan) {
-       let parent = topSkillsSpan.parentElement;
-       for(let i=0; i<5; i++) {
-         if(parent) parent = parent.parentElement;
-       }
-       if (parent) {
-         const textContent = parent.innerText;
-         if (textContent.includes('•')) {
-            const lines = textContent.split('\n');
-            const skillsLine = lines.find(l => l.includes('•'));
-            if (skillsLine) topSkills = skillsLine.trim();
-         }
+       let curr = topSkillsSpan.parentElement;
+       let depth = 0;
+       while (curr && depth < 10) {
+           const textContent = curr.innerText || '';
+           if (textContent.includes('•') || textContent.includes('·')) {
+               const lines = textContent.split('\n');
+               const skillsLine = lines.find(l => l.includes('•') || l.includes('·'));
+               if (skillsLine) {
+                   topSkills = skillsLine.replace(/^[•·]\s*/, '').trim();
+                   break;
+               }
+           }
+           curr = curr.parentElement;
+           depth++;
        }
     }
     
     if (!topSkills) {
       const allDivs = Array.from(document.querySelectorAll('div'));
-      const bulletDiv = allDivs.find(d => d.innerText && d.innerText.includes('•') && d.innerText.length > 20 && d.innerText.length < 200 && d.children.length === 0);
-      if (bulletDiv) topSkills = bulletDiv.innerText.trim();
+      const bulletDiv = allDivs.find(d => d.innerText && (d.innerText.includes('•') || d.innerText.includes('·')) && d.innerText.length > 20 && d.innerText.length < 200 && d.children.length === 0);
+      if (bulletDiv) topSkills = bulletDiv.innerText.replace(/^[•·]\s*/, '').trim();
     }
 
     let notesArr = [];
@@ -109,71 +181,57 @@ function extractData() {
     
     // Attempt to extract full context for Matcher algorithm
     let fullProfileContext = '';
+    let expSectionContext;
     try {
-        const aboutSection = Array.from(document.querySelectorAll('section')).find(s => s.innerText.toLowerCase().includes('about') && s.innerText.length > 50);
+        const aboutSection = Array.from(document.querySelectorAll('section')).find(s => (s.innerText || '').toLowerCase().includes('about') && (s.innerText || '').length > 50);
         if (aboutSection) fullProfileContext += aboutSection.innerText + '\n\n';
         
-        const expSection = Array.from(document.querySelectorAll('section')).find(s => s.querySelector('h2') && s.querySelector('h2').innerText.toLowerCase().includes('experience'));
-        if (expSection) fullProfileContext += expSection.innerText + '\n\n';
-    } catch(e) {}
+        expSectionContext = Array.from(document.querySelectorAll('section')).find(s => (s.innerText || '').toLowerCase().includes('experience'));
+        if (expSectionContext) fullProfileContext += expSectionContext.innerText;
+    } catch (e) { console.error('Error extracting context', e); }
     
-    // Match cumulative statements first (e.g. "Over 2.5 years of experience")
-    const expMatch = textLower.match(/(\d+(?:\.\d+)?)\+?\s*y(?:ea)?r?s?(?: of)? experience/);
-    if (expMatch && expMatch[1]) {
-      careerStage = 'Experienced';
-      totalYearsExp = Math.round(parseFloat(expMatch[1]) * 10) / 10;
-    } else {
-      let totalMonths = 0;
-      
-      // 1. Decade matching
-      if (textLower.match(/\bdecade\b/)) totalMonths += 120;
-      
-      // 2. Decimal matching (e.g. "2.3 years", "1.5 yrs")
-      const decimalMatches = textLower.match(/(\d+\.\d+)\s*y(?:ea)?r?s?/g);
-      if (decimalMatches) {
-         decimalMatches.forEach(m => {
-            const val = parseFloat(m);
-            if (!isNaN(val)) totalMonths += Math.round(val * 12);
-         });
-      }
-      
-      // 3. Standard and abbreviation matching (e.g. "2 years 3 months", "2y 3m", "2y3m")
-      const durationMatches = textLower.match(/(\d+)\s*y(?:ea)?r?s?(?:\s*(\d+)\s*m(?:o|onth)?s?)?|(\d+)\s*m(?:o|onth)?s?/g);
-      if (durationMatches && durationMatches.length > 0) {
-         durationMatches.forEach(m => {
-            const yrMatch = m.match(/(\d+)\s*y(?:ea)?r?s?/);
-            const moMatch = m.match(/(\d+)\s*m(?:o|onth)?s?/);
-            if (yrMatch && yrMatch[1]) totalMonths += parseInt(yrMatch[1], 10) * 12;
-            if (moMatch && moMatch[1]) totalMonths += parseInt(moMatch[1], 10);
-         });
-         
-         // Chronological fallback to prevent overlapping roles double-counting
-         let chronoMonths = 0;
-         const expSection = Array.from(document.querySelectorAll('section')).find(s => s.innerText.toLowerCase().includes('experience'));
-         const searchArea = expSection ? expSection.innerText : document.body.innerText;
-         const yearMatches = searchArea.match(/\b(199\d|20[0-2]\d)\b/g);
-         
-         if (yearMatches && yearMatches.length > 0) {
-             const years = yearMatches.map(y => parseInt(y, 10));
-             const minYear = Math.min(...years);
-             const currentYear = new Date().getFullYear();
-             if (minYear >= 1970 && minYear <= currentYear) {
-                 chronoMonths = (currentYear - minYear) * 12;
-             }
-         }
-         
-         // Use the smaller of the two to combat massive double-counts, unless chrono is 0
-         const finalMonths = (chronoMonths > 0 && chronoMonths < totalMonths) ? chronoMonths : totalMonths;
+    // 1. Primary Method: Interval Merging Algorithm for Flawless Timeline Parsing
+    const searchAreaText = expSectionContext ? expSectionContext.innerText : document.body.innerText;
+    let finalMonths = calculateMergedExperienceMonths(searchAreaText);
+    
+    // 2. Fallback Method: Cumulative Match ("Over 2.5 years of experience")
+    if (finalMonths === 0) {
+        const expMatch = textLower.match(/(\d+(?:\.\d+)?)\+?\s*y(?:ea)?r?s?(?: of)? experience/);
+        if (expMatch && expMatch[1]) {
+            finalMonths = parseFloat(expMatch[1]) * 12;
+        }
+    }
+    
+    // 3. Last Resort Fallback Method: Raw Regex Summation (Susceptible to double-counting)
+    if (finalMonths === 0) {
+        if (textLower.match(/\bdecade\b/)) finalMonths += 120;
+        
+        const decimalMatches = textLower.match(/(\d+\.\d+)\s*y(?:ea)?r?s?/g);
+        if (decimalMatches) {
+            decimalMatches.forEach(m => {
+                const val = parseFloat(m);
+                if (!isNaN(val)) finalMonths += Math.round(val * 12);
+            });
+        }
+        
+        const durationMatches = textLower.match(/(\d+)\s*y(?:ea)?r?s?(?:\s*(\d+)\s*m(?:o|onth)?s?)?|(\d+)\s*m(?:o|onth)?s?/g);
+        if (durationMatches && durationMatches.length > 0) {
+            durationMatches.forEach(m => {
+                const yrMatch = m.match(/(\d+)\s*y(?:ea)?r?s?/);
+                const moMatch = m.match(/(\d+)\s*m(?:o|onth)?s?/);
+                if (yrMatch && yrMatch[1]) finalMonths += parseInt(yrMatch[1], 10) * 12;
+                if (moMatch && moMatch[1]) finalMonths += parseInt(moMatch[1], 10);
+            });
+        }
+    }
 
-         if (finalMonths > 0) {
-            careerStage = 'Experienced';
-            totalYearsExp = Math.round((finalMonths / 12) * 10) / 10; // Supports 1 decimal place (e.g. 2y3m -> 27mo/12 -> 2.25 -> 2.3)
-         }
-      } else if (textLower.includes('student at') || textLower.includes('university ') || role.toLowerCase().includes('student')) {
+    if (finalMonths > 0) {
+        careerStage = 'Experienced';
+        totalYearsExp = Math.round((finalMonths / 12) * 10) / 10;
+    } else if (textLower.includes('student at') || textLower.includes('university ') || role.toLowerCase().includes('student')) {
          careerStage = 'Student';
-      } else if (role.toLowerCase().includes('intern') || role.toLowerCase().includes('fresher')) {
+    } else if (role.toLowerCase().includes('intern') || role.toLowerCase().includes('fresher')) {
          careerStage = 'Fresher';
-      }
     }
 
     // Extract emails and phone numbers from the entire page text
@@ -355,33 +413,120 @@ function extractData() {
   });
 }
 
-// Run extraction 4 seconds after page load to allow dynamic content (React/SPA) to fully render
-setTimeout(extractData, 4000);
-// Run a secondary extraction at 20s to catch data lazy-loaded as the user scrolls
-setTimeout(extractData, 20000);
+// Advanced Dynamic Observation Engine
 
-// Watch for URL changes on Single Page Applications (like LinkedIn) without full page reloads
+let extractTimeout;
+function debouncedExtract(delay = 1500) {
+    clearTimeout(extractTimeout);
+    extractTimeout = setTimeout(extractData, delay);
+}
+
+// 1. Intersection Observer: Triggers when lazy-loaded sections enter viewport
+const sectionObserver = new IntersectionObserver((entries) => {
+    let shouldExtract = false;
+    entries.forEach(entry => {
+        if (entry.isIntersecting) {
+            const text = (entry.target.innerText || '').toLowerCase();
+            if (text.includes('experience') || text.includes('about')) {
+                shouldExtract = true;
+            }
+        }
+    });
+    if (shouldExtract) {
+        debouncedExtract(1000); // Give it a moment to fully render text
+    }
+}, { threshold: 0.1 });
+
+// Observe existing sections on initial load
+document.querySelectorAll('section').forEach(s => sectionObserver.observe(s));
+
+// 2. DOM Mutation Observer: Triggers when React/SPA injects new sections
+new MutationObserver((mutations) => {
+    let newSections = false;
+    mutations.forEach(m => {
+        m.addedNodes.forEach(node => {
+            if (node.nodeName === 'SECTION') {
+                sectionObserver.observe(node);
+                newSections = true;
+            } else if (node.querySelectorAll) {
+                const sections = node.querySelectorAll('section');
+                if (sections.length > 0) {
+                    sections.forEach(s => sectionObserver.observe(s));
+                    newSections = true;
+                }
+            }
+        });
+    });
+    if (newSections) {
+        debouncedExtract(1500); 
+    }
+}).observe(document.body, { subtree: true, childList: true });
+
+// 3. SPA Navigation Observer: Handles URL changes without full page reload
 let lastUrl = window.location.href;
 new MutationObserver(() => {
   const url = window.location.href;
   if (url !== lastUrl) {
     lastUrl = url;
-    window._scLastPayload = null; // reset payload cache on navigation
-    setTimeout(extractData, 4000);
-    setTimeout(extractData, 20000);
+    // Clear all payload caches so it forces a re-send on navigation
+    for (let key in window) {
+       if (key.startsWith('_scLastPayload')) window[key] = null;
+    }
+    debouncedExtract(2000); // Wait for initial render
   }
 }).observe(document, { subtree: true, childList: true });
 
-// Listen to scroll to catch lazy-loaded sections (like Experience)
-let scrollTimeout;
-window.addEventListener('scroll', () => {
-    clearTimeout(scrollTimeout);
-    scrollTimeout = setTimeout(extractData, 1500);
-});
+// Initial run
+setTimeout(extractData, 3000);
 
 // We can also allow the user to trigger it manually via a message from the popup
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'EXTRACT_NOW') {
     extractData();
   }
+});
+
+// 4. Contact Modal Hook (Listens for clicks on contact info and scrapes modal)
+document.addEventListener('click', (e) => {
+    let target = e.target;
+    let clickedContactInfo = false;
+    
+    // Check clicked element and its parents (in case they clicked an icon inside the link)
+    while (target && target !== document.body) {
+        const text = (target.innerText || '').toLowerCase();
+        if (text.includes('contact info') || (target.tagName === 'A' && (target.href || '').includes('contact-info'))) {
+            clickedContactInfo = true;
+            break;
+        }
+        target = target.parentElement;
+    }
+    
+    if (clickedContactInfo) {
+        setTimeout(() => {
+            const modal = document.querySelector('.artdeco-modal, [role="dialog"]') || document.body;
+            const modalText = (modal.innerText || '');
+            
+            const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/gi;
+            const emails = [...new Set(modalText.match(emailRegex) || [])];
+            
+            const phoneRegex = /(?:\+?\d{1,3}[\s-]?)?\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4}/g;
+            const phones = [...new Set(modalText.match(phoneRegex) || [])];
+            
+            if (emails.length > 0 || phones.length > 0) {
+                let url = window.location.href;
+                const match = url.match(/(https:\/\/(www\.)?linkedin\.com\/in\/[^\/?#]+)/i);
+                if (match) url = match[1]; // normalize URL
+                
+                chrome.runtime.sendMessage({ 
+                    type: 'NEW_CONNECTION', 
+                    payload: { 
+                        url: url, 
+                        email: emails.length > 0 ? emails[0] : undefined, 
+                        phone: phones.length > 0 ? phones[0].trim() : undefined,
+                        timestamp: Date.now()
+                    } 
+                });
+            }
+        }, 1500); // Wait for modal to render
+    }
 });
